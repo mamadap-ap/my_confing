@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>کانفیگ من</title>
+<style>
+  * { box-sizing: border-box; font-family: system-ui, sans-serif; }
+  body { margin: 0; background: #0f172a; color: #e2e8f0; padding: 16px; padding-bottom: 40px; }
+  h1 { font-size: 18px; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+  h1 button { background: #334155; border: none; color: white; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .bar { display: flex; gap: 8px; margin-bottom: 12px; }
+  .bar button { flex: 1; padding: 10px; border: none; border-radius: 8px; background: #2563eb; color: white; font-size: 13px; cursor: pointer; }
+  .bar button:active { background: #1d4ed8; }
+  #status { font-size: 12px; color: #94a3b8; margin-bottom: 8px; min-height: 16px; }
+  .card { background: #1e293b; border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+  .card.top { border: 1px solid #22c55e; }
+  .card h2 { font-size: 14px; margin: 0 0 4px; word-break: break-all; }
+  .card p { font-size: 11px; margin: 0 0 8px; color: #94a3b8; word-break: break-all; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row button { padding: 8px 10px; font-size: 12px; border: none; border-radius: 6px; cursor: pointer; }
+  .copy { background: #2563eb; color: white; flex: 1; }
+  .ping { background: #475569; color: white; }
+  .ping { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #334155; }
+  .ok { background: #166534; color: #bbf7d0; }
+  .bad { background: #7f1d1d; color: #fecaca; }
+  .wait { background: #334155; color: #cbd5e1; }
+</style>
+</head>
+<body>
+<h1>کانفیگ من <button onclick="load()">↻ آپدیت</button></h1>
+<div id="status">آماده</div>
+<div class="bar">
+  <button onclick="pingAll()">پینگ همه</button>
+  <button onclick="copyBest()">کپی بهترین</button>
+</div>
+<div id="list"></div>
+
+<script>
+// ===== آدرس فایل کانفیگ‌های شما =====
+// دقت کن که اسم کاربری و اسم ریپازیتوری خودت رو اینجا بذاری
+const SOURCES = [
+  "https://raw.githubusercontent.com/mamadap-ap/my_confing/main/configs.txt"
+];
+
+let servers = [];
+let bestIndex = -1;
+
+async function load() {
+  setStatus("در حال دریافت...");
+  servers = [];
+  for (const url of SOURCES) {
+    try {
+      const res = await fetch(url + "?t=" + Date.now(), { cache: "no-store" });
+      const text = await res.text();
+      const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+      for (const l of lines) {
+        if (l.startsWith("vmess://")) {
+          const s = parseVmess(l);
+          if (s) servers.push(s);
+        } else if (l.startsWith("vless://")) {
+          const s = parseVless(l);
+          if (s) servers.push(s);
+        }
+      }
+    } catch (e) {
+      console.warn("source failed", url, e);
+    }
+  }
+  const seen = new Set();
+  servers = servers.filter(s => {
+    const k = s.address + ":" + s.port;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  render();
+  setStatus("دریافت شد: " + servers.length + " سرور");
+}
+
+function b64decode(s) {
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  return decodeURIComponent(escape(atob(s)));
+}
+
+function parseVmess(link) {
+  try {
+    const json = JSON.parse(b64decode(link.replace("vmess://", "")));
+    return {
+      name: json.ps || "unnamed",
+      address: json.add,
+      port: parseInt(json.port) || 443,
+      sni: json.sni || json.add,
+      raw: link,
+      ping: null,
+    };
+  } catch { return null; }
+}
+
+function parseVless(link) {
+  try {
+    const u = new URL(link);
+    return {
+      name: decodeURIComponent(u.hash.replace("#", "")) || "unnamed",
+      address: u.hostname,
+      port: parseInt(u.port) || 443,
+      sni: u.searchParams.get("sni") || u.hostname,
+      raw: link,
+      ping: null,
+    };
+  } catch { return null; }
+}
+
+function render() {
+  const sorted = [...servers].sort((a, b) => {
+    if (a.ping === null && b.ping === null) return 0;
+    if (a.ping === null) return 1;
+    if (b.ping === null) return -1;
+    return a.ping - b.ping;
+  });
+  bestIndex = sorted.findIndex(s => s.ping !== null && s.ping > 0);
+
+  document.getElementById("list").innerHTML = sorted.map((s, i) => {
+    const pingClass = s.ping === null ? "wait" : (s.ping > 0 ? "ok" : "bad");
+    const pingText = s.ping === null ? "—" : (s.ping > 0 ? s.ping + " ms" : "قطع");
+    const top = i === bestIndex ? "top" : "";
+    return `
+      <div class="card ${top}">
+        <h2>${escapeHtml(s.name)}</h2>
+        <p>${escapeHtml(s.address)}:${s.port}</p>
+        <div class="row">
+          <span class="ping ${pingClass}">${pingText}</span>
+          <button class="copy" onclick="copy(${servers.indexOf(s)})">کپی</button>
+          <button class="ping" onclick="pingOne(${servers.indexOf(s)})">پینگ</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function escapeHtml(t) {
+  return String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function copy(i) {
+  navigator.clipboard.writeText(servers[i].raw)
+    .then(() => setStatus("کپی شد — در v2rayNG پیست کن"))
+    .catch(() => setStatus("کپی نشد، دستی انتخاب کن"));
+}
+
+function copyBest() {
+  const s = [...servers].filter(x => x.ping > 0).sort((a, b) => a.ping - b.ping)[0];
+  if (!s) return setStatus("اول پینگ بزن");
+  navigator.clipboard.writeText(s.raw)
+    .then(() => setStatus("بهترین سرور کپی شد"))
+    .catch(() => setStatus("کپی نشد"));
+}
+
+function pingOne(i) {
+  const s = servers[i];
+  s.ping = null;
+  const start = Date.now();
+  const img = new Image();
+  const done = (ok) => {
+    if (s.ping !== null) return;
+    s.ping = ok ? Date.now() - start : -1;
+    render();
+  };
+  img.onload = () => done(true);
+  img.onerror = () => done(true);
+  img.src = `https://${s.address}:${s.port}/?_=${Date.now()}`;
+  setTimeout(() => done(false), 4000);
+}
+
+function pingAll() {
+  servers.forEach((_, i) => pingOne(i));
+}
+
+function setStatus(t) { document.getElementById("status").textContent = t; }
+
+load();
+</script>
+</body>
+</html>
